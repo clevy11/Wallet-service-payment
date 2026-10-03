@@ -1,9 +1,10 @@
 # AGENTS.md
 
 ## What this repo is right now
-A bare Spring Initializr skeleton — **no business logic exists yet**. The only tracked
-source is `WalletServiceApplication` + `WalletServiceApplicationTests`. No README, no
-docker-compose, no CI. Never assume a feature is already implemented.
+Six-module Spring Boot 4.0.1 microservice skeleton plus the wallet domain schema.
+`wallet-service` has its Flyway migration, JPA entities and repositories, tested against a
+real Postgres via Testcontainers. Nothing else has business logic yet. No HTTP endpoints,
+no Kafka, no auth. Never assume a feature is already implemented.
 
 It is also a **learning project**: the owner is refreshing distributed-systems knowledge.
 Read "Working style" before writing any code.
@@ -25,6 +26,9 @@ Read "Working style" before writing any code.
 - No `.mvn/maven.config` or `jvm.config`: don't assume custom flags or offline mode.
 - No lint, formatter, or typecheck task exists (no Spotless/Checkstyle/EditorConfig).
   Don't add one uninvited; match the surrounding 4-space style.
+- **Docker must be running for the wallet-service build.** Its tests are Testcontainers
+  integration tests, so `./mvnw clean package` fails on container startup, not on logic,
+  if the daemon is down.
 
 ## Java / toolchain traps
 - `pom.xml` sets `<java.version>21</java.version>`, but `.idea/misc.xml` pins
@@ -41,6 +45,18 @@ Read "Working style" before writing any code.
   test starter once that technology is really in the module.
 - Boot 4 renamed `spring-boot-starter-aop` to **`spring-boot-starter-aspectj`** (the old
   coordinates 404). Needed for annotation-driven Resilience4j aspects.
+- **Flyway needs its dialect artifact declared separately.** Since Flyway 10 the database
+  support is not in `flyway-core`, so `spring-boot-starter-flyway` alone boots, fails to
+  find a PostgreSQL plugin, and dies. Add
+  `org.flywaydb:flyway-database-postgresql` as well.
+- **`@ServiceConnection` needs `org.springframework.boot:spring-boot-testcontainers`.** The
+  Testcontainers 2.x modules do not pull it in transitively, and without it the annotation
+  does not exist to import.
+- **A manually assigned `@Id` makes `save()` call `merge()`, not `persist()`.** `merge`
+  SELECTs first, so re-saving an existing row issues an UPDATE and silently upserts instead
+  of colliding with the primary key. This defeats idempotency guards that assume an
+  INSERT will fail. Use `INSERT ... ON CONFLICT DO NOTHING` for dedup
+  (see `ProcessedEventRepository.insertIfAbsent`) and assert on the returned row count.
 
 ## Schema ownership — Flyway, never by hand
 - **Never create or alter tables manually in `psql`.** Flyway migrations are the only
@@ -48,8 +64,12 @@ Read "Working style" before writing any code.
   "relation already exists", and "fixing" it with a Flyway baseline is worse: Flyway then
   skips V1 and the database shape can never be reproduced by anyone else.
 - To correct a mistake, add a **new** migration (`V2__...`). Never edit the live DB.
-- Split of ownership: the **databases** (`walletdb`, `paymentdb`) are created by the
-  Postgres container's init script in `infra/`; everything *inside* them is Flyway's.
+- Split of ownership: the **databases** (`walletdb`, `paymentdb`, `authdb`) are created by
+  the Postgres container's init script in `infra/`; everything *inside* them is Flyway's.
+- **No cross-database foreign keys, ever.** The link from a wallet-service customer to an
+  auth-server user is `customers.owner_id` = the JWT `sub` claim, a plain column. Postgres
+  cannot enforce a constraint across databases, so the equality is an application-level
+  promise established by a `UserCreated` event on `auth.events`.
 
 ## Version strategy — do not "helpfully" upgrade
 - `pom.xml` currently declares Spring Boot **4.1.1**. The agreed target is **Boot 4.0.1 +
@@ -113,20 +133,41 @@ Read "Working style" before writing any code.
 - `gh` CLI is not installed.
 - `origin/master` is a stale branch (two commits behind `main`, and missing LICENSE).
   `main` is the branch that matters.
-- **Never force-push.** Push the feature branch first, then fast-forward `main`, then push
-  `main` — that sequence cannot overwrite anyone else's work.
+- **Never force-push.**
+- **Workflow: branch → push → PR → merge.** Push the feature branch, open the PR against
+  `main`, then merge. Do **not** fast-forward `main` locally first: once `main` contains the
+  branch's commits, GitHub reports "There isn't anything to compare" and refuses to open a
+  PR. Steps: `git switch -c feat/<id>-<name>` → work → `git add -A -- . ':!*.DS_Store'` →
+  commit → `git push -u origin HEAD` → open the PR URL GitHub prints.
 
 ## Target architecture (not implemented yet)
 Multi-module Maven with the root pom as aggregator: `wallet-service` (8081),
 `payment-service` (8082), `bank-mock` (8083), `notification-service` (8084),
-`api-gateway` (8080), `auth-server` (JWT issuer).
+`api-gateway` (8080), `auth-server` (JWT issuer, **owns `authdb`**).
 
 Settled decisions — don't relitigate or substitute alternatives:
 - **Database per service.** No cross-service queries or joins, ever.
+- **`auth-server` is stateful and owns `authdb`.** Verifying a password means looking the
+  user up, so "stateless" auth is not an option here. `authdb` holds credentials, roles,
+  `token_version` and refresh tokens **only** — never wallet or ledger data. Bump
+  `token_version` to invalidate every issued token for a user instantly.
 - **No shared `common` module.** Each service owns its event contracts; duplication between
   producer and consumer is intentional, not an oversight.
-- Topics are `wallet.events` / `payment.events` with a typed envelope (eventId, eventType,
-  aggregateId, version, occurredAt, correlationId, payload) — not one topic per event type.
+- Topics are `auth.events` / `wallet.events` / `payment.events` with a typed envelope
+  (eventId, eventType, aggregateId, version, occurredAt, correlationId, payload) — **not one
+  topic per event type**, so a new event type needs no consumer reconfiguration.
+- **`correlationId` is captured at write time** from the request (`X-Correlation-Id`), not
+  generated by the publisher — generated at publish time it traces nothing.
+- **Every event is keyed by `aggregateId` when published.** Same partition means same
+  aggregate is processed by one consumer at a time, in order.
+- **Idempotency key = the column whose uniqueness you enforce.** `UNIQUE(owner_id)` protects
+  state-setting events (replay converges); `processed_events(event_id)` protects relative
+  ones like "debit 50", where no business key can distinguish a replay from a legitimate
+  repeat. Both are needed.
+- **Transactional outbox, then the relay.** Business row and outbox row commit in one
+  transaction; a `@Scheduled` publisher relays `published_at IS NULL` rows. This removes
+  event *loss* but not *duplicates* — which is precisely why consumers must be idempotent.
+  Never write to the DB and Kafka in the same `@Transactional` method (the dual-write bug).
 - Idempotency keys, transactional outbox, and a choreographed saga that compensates on
   `payment.failed`.
 - Auth is a self-issued JWT module (`auth-server`: Nimbus + RSA keypair + JWKS). Keycloak

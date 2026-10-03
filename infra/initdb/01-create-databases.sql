@@ -12,3 +12,9 @@
 
 CREATE DATABASE walletdb;
 CREATE DATABASE paymentdb;
+
+-- auth-server owns authdb. It exists because verifying a password requires looking
+-- the user up, which makes auth-server stateful. See AGENTS.md: authdb holds
+-- credentials and refresh tokens only; business data (wallets, ledger) stays in
+-- walletdb and is never joined to it.
+CREATE DATABASE authdb;
