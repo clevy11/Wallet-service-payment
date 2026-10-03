@@ -5,6 +5,68 @@ spring:
   application:
     name: auth-server
 
+  datasource:
+    # Host port 5433, not 5432: a leftover process from a previous Docker install
+    # already listens on 5432. authdb is created by the Postgres init script.
+    url: jdbc:postgresql://localhost:5433/authdb
+    username: postgres
+    password: postgres
+
+  jpa:
+    # validate, never update/create. Flyway owns the schema.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # JacksonJsonSerializer, NOT JsonSerializer. Boot 4 ships Jackson 3
+      # (tools.jackson) and configures that ObjectMapper; the older JsonSerializer
+      # is Jackson 2 (com.fasterxml) and will not see the application's mapper.
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        # Do not write the producer's Java class names into a __TypeId__ header.
+        # Those names are the producer's internal layout: a consumer forced to
+        # resolve them breaks the moment auth-server renames or repackages a
+        # record, and two services now share a build-time coupling they are meant
+        # to be decoupled from. Consumers dispatch on eventType instead.
+        spring.json.add.type.headers: false
+        # Wait for the full ISR (in-sync replica set) to acknowledge, not just the
+        # leader. With acks=1 the leader writes locally and replies; if that broker
+        # then dies before replication, the event is gone and the outbox has
+        # already marked it published. Unrecoverable event loss.
+        acks: all
+        # Makes a retry of the same send idempotent at the broker: a duplicate
+        # caused by a network timeout is deduplicated by producer id and sequence.
+        enable.idempotence: true
+        retries: 3
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
+
+app:
+  events:
+    # One topic per producing service, not per event type. A new event type then
+    # needs no change to any consumer's subscription config.
+    auth-topic: auth.events
+  outbox:
+    # How often the relay looks for unpublished rows.
+    fixed-delay-ms: 2000
+    # Wait this long before the first scan. Without it, every replica started at the
+    # same moment scans the same backlog in lockstep -- worst exactly after a
+    # restart, which is when the backlog is largest.
+    initial-delay-ms: 2000
+    batch-size: 50
+
 management:
   endpoints:
     web:
