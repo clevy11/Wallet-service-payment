@@ -106,8 +106,15 @@ Read "Working style" before writing any code.
   conventional-commit messages; tag each completed day `day1`..`day5`.
 - `.idea/` and `target/` are ignored but **`.DS_Store` is not** — `git status` always shows
   untracked `.DS_Store` files. Expected; never commit them.
-- `main` is the only local branch. `origin` is `github.com/clevy11/Wallet-service-payment.git`
-  (a `master` branch also exists on the remote). Commit only when explicitly asked.
+- `origin` is `github.com/clevy11/Wallet-service-payment.git`. **Push uses HTTPS with a
+  token already stored in the macOS keychain** (git credential helper `osxkeychain`), so
+  pushes do not prompt. The `~/.ssh/id_ed25519` key is *not* registered with GitHub —
+  SSH push fails with `Permission denied (publickey)`, so don't switch the remote to SSH.
+- `gh` CLI is not installed.
+- `origin/master` is a stale branch (two commits behind `main`, and missing LICENSE).
+  `main` is the branch that matters.
+- **Never force-push.** Push the feature branch first, then fast-forward `main`, then push
+  `main` — that sequence cannot overwrite anyone else's work.
 
 ## Target architecture (not implemented yet)
 Multi-module Maven with the root pom as aggregator: `wallet-service` (8081),
