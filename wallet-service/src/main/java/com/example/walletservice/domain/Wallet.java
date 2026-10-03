@@ -11,6 +11,10 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 /**
  * A wallet holds a balance in exactly one currency.
@@ -18,15 +22,21 @@ import jakarta.persistence.Version;
  * <p>The balance is a cached running total of {@link WalletEntry} rows. Both are
  * written in the same database transaction, so they cannot disagree, and the sum
  * of a wallet's entries can be compared against the balance as an audit.
+ *
  */
+@Getter
+@Setter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Entity
 @Table(name = "wallets")
 public class Wallet {
 
+    @Setter(AccessLevel.NONE)
     @Id
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
+    @Setter(AccessLevel.NONE)
     @Column(name = "customer_id", nullable = false, updatable = false)
     private UUID customerId;
 
@@ -55,6 +65,7 @@ public class Wallet {
      * used for debit relies on the database's row lock instead, which is why that
      * query is safe without this counter.
      */
+    @Setter(AccessLevel.NONE)
     @Version
     @Column(name = "version", nullable = false)
     private long version;
@@ -65,9 +76,6 @@ public class Wallet {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    protected Wallet() {
-    }
-
     public Wallet(UUID id, UUID customerId, String currency, BigDecimal openingBalance) {
         this.id = id;
         this.customerId = customerId;
@@ -77,35 +85,4 @@ public class Wallet {
         this.updatedAt = this.createdAt;
     }
 
-    public UUID getId() {
-        return id;
-    }
-
-    public UUID getCustomerId() {
-        return customerId;
-    }
-
-    public String getCurrency() {
-        return currency;
-    }
-
-    public BigDecimal getBalance() {
-        return balance;
-    }
-
-    public WalletStatus getStatus() {
-        return status;
-    }
-
-    public long getVersion() {
-        return version;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
-    }
 }
