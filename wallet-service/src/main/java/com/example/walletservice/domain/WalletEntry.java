@@ -18,8 +18,9 @@ import lombok.Setter;
 /**
  * One immutable movement in a wallet's history. Rows are only ever inserted --
  * there is no update path, which is what makes the table trustworthy as an audit
- * trail. Hence {@code @Setter} is limited to {@link #reference}, the only field
- * that legitimately changes, and even that is normally set once at insert.
+ * trail. So no field is settable: {@code @Setter} is declared at class level only
+ * so that each field's {@code @Setter(AccessLevel.NONE)} below is explicit about
+ * closing it off, rather than relying on nobody noticing the annotation is gone.
  *
  * <p>{@code balanceAfter} snapshots the wallet balance as of this entry. It is
  * denormalised on purpose: summing the entries and comparing against
