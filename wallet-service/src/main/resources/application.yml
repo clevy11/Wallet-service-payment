@@ -5,6 +5,29 @@ spring:
   application:
     name: wallet-service
 
+  datasource:
+
+    url: jdbc:postgresql://localhost:5433/walletdb
+    username: postgres
+    password: postgres
+
+  jpa:
+    # validate, never update/create. Flyway owns the schema; Hibernate only checks
+    # that its mappings agree with it and refuses to boot on a mismatch. `update`
+    # would silently ALTER tables with no record of what it changed; `create` would
+    # drop data on every boot.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
 management:
   endpoints:
     web:
