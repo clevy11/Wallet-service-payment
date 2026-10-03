@@ -57,6 +57,19 @@
         </dependencies>
     </dependencyManagement>
 
+    <!-- Inherited by every module. Compile-time only, hence provided: the generated
+         code has no runtime dependency on Lombok itself. No version needed, the
+         Boot parent manages it (currently 1.18.42, which supports JDK 21).
+         This pom declares no <annotationProcessorPaths>, so processors are
+         discovered from the compile classpath automatically. -->
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
     <build>
         <pluginManagement>
             <plugins>

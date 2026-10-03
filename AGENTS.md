@@ -34,9 +34,21 @@ Read "Working style" before writing any code.
 - `pom.xml` sets `<java.version>21</java.version>`, but `.idea/misc.xml` pins
   `openjdk-24` / `JDK_24`. Only JDK 21 is installed. Trust the pom; the IDE SDK is stale
   and shows errors that aren't real.
-- Lombok processing is wired by hand in `pom.xml` via `<annotationProcessorPaths>` on both
-  `default-compile` and `default-testCompile`. Because the list is explicit, **any new
-  annotation processor must be added to both lists** or it silently won't run.
+- Lombok is a single `provided` dependency declared in the root `pom.xml`, so every module
+  inherits it. This pom declares **no** `<annotationProcessorPaths>`, so processors are
+  discovered from the compile classpath automatically — the "add every processor to both
+  `default-compile` and `default-testCompile` lists" rule that applied to the original
+  skeleton no longer applies here. Don't reintroduce explicit lists.
+- **Entities use `@Getter @Setter @NoArgsConstructor(PROTECTED)`, never `@Data`.** `@Data`
+  expands to `@ToString` + `@EqualsAndHashCode` over every field, which is wrong for a
+  mutable JPA entity: the generated `hashCode` includes mutable state and the `@Version`
+  counter, so it changes the moment the row is saved and corrupts any `HashSet` or map key
+  holding the entity. Hibernate treats the *identifier* as identity, not field equality.
+  `@Data` is safe only on DTOs, where fields are immutable.
+- `@Setter(AccessLevel.NONE)` on `id`, `owner_id` and `@Version` fields: identity is assigned
+  at construction and must not be reassignable by application code. Use `javap -p
+  target/classes/...` to confirm the generated surface — Lombok's output is invisible in
+  the source.
 - Boot 4 modularized the test starters: this pom uses `spring-boot-starter-data-jpa-test`
   and `spring-boot-starter-security-test`, not `spring-boot-starter-test`.
 - **Test starters are not lightweight.** `spring-boot-starter-data-jpa-test` transitively
@@ -178,7 +190,9 @@ Settled decisions — don't relitigate or substitute alternatives:
 - The gateway fronts `wallet-service` only; `payment-service` is internal.
 - wallet-service and payment-service never call each other directly — they meet only
   through Kafka. So there is no discovery problem across that boundary.
-- Money is `BigDecimal`, never `double`. Java 21, records for DTOs, **no Lombok**.
+- Money is `BigDecimal`, never `double`. Java 21, records for DTOs. Lombok is available
+  and used on JPA entities (`@Getter @Setter @NoArgsConstructor(PROTECTED)`), but DTOs stay
+  records — see "Java / toolchain traps" for why `@Data` is banned on entities.
 
 ## Working style (important)
 - This repo exists to teach distributed systems, not to ship code fast. Deliver **one
