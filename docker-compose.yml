@@ -1,13 +1,12 @@
 # Local infrastructure for the wallet-system modules.
 #
-# Default (`docker compose up -d`) starts Postgres only. Kafka sits behind the
-# `kafka` profile because it is only needed from Day 3 onwards, and this machine
-# has 8.3 GB allocated to Docker:
+# Default (`docker compose up -d`) starts Postgres only. Kafka and its web UI sit
+# behind the `kafka` profile, and this machine has 8.3 GB allocated to Docker:
 #
 #   docker compose up -d                        # postgres
-#   docker compose --profile kafka up -d        # postgres + kafka
-#   docker compose --profile observability up -d # + prometheus, grafana, jaeger
-#   docker compose --profile security up -d      # + keycloak
+#   docker compose --profile kafka up -d        # postgres + kafka + console
+#
+# Console UI: http://localhost:18080
 #
 # Every service address here is injected as a plain config value -- there is no
 # service discovery anywhere in this system (see AGENTS.md).
@@ -46,13 +45,27 @@ services:
       # Single-node KRaft: this node is both broker and controller.
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      # What clients are told to use. localhost works for services running on the
-      # host; containers on this network would use kafka:9092 instead.
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # Two client listeners, because "what address do I advertise" has no single
+      # right answer on a laptop: services run from the Mac reach the broker through
+      # the published host port, while other containers on this network reach it by
+      # service name. A broker can only advertise one address per listener, so it
+      # needs one listener per audience.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,INTERNAL://:29092
+      # What clients are told to use -- and crucially, it is what they are told
+      # *after* the initial connection, so a client that resolved kafka:29092 is
+      # handed localhost:9092 instead and would try to dial itself.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      # Broker-to-broker traffic. Must name a non-controller listener, so it cannot
+      # be CONTROLLER.
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      # The image's bundled server.properties points log.dirs at /tmp/kraft-combined-logs,
+      # which is NOT the volume mounted below -- so the volume stays empty and every
+      # broker recreate silently loses all topics and consumer offsets. Point the log
+      # dirs at the volume explicitly.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
       # Single broker, so every internal topic must allow replication factor 1.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -67,6 +80,29 @@ services:
       timeout: 10s
       retries: 10
       start_period: 20s
+    restart: unless-stopped
+
+  # Web UI for the broker. Redpanda Console reads any Kafka-compatible cluster, so
+  # this is only a viewer and admin tool -- the broker stays stock Apache Kafka.
+  # Useful for seeing what the relay actually published, and for watching a consumer
+  # group's lag and offsets, which is invisible from the application side.
+  console:
+    image: docker.redpanda.com/redpandadata/console:v3.12.0
+    container_name: kafka-console
+    profiles: ["kafka"]
+    ports:
+      # Host 18080 rather than 8080: 8080 is api-gateway's port, and mapping it here
+      # would collide the moment the gateway is actually run.
+      - "18080:8080"
+    environment:
+      # The in-network listener. localhost would be the console's own container, not
+      # the broker -- the classic way a containerised client silently fails to connect.
+      KAFKA_BROKERS: kafka:29092
+    depends_on:
+      kafka:
+        # Wait for the broker to answer, or the console starts, fails to connect and
+        # exits instead of retrying.
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

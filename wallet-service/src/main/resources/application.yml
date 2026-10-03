@@ -28,6 +28,46 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  kafka:
+    bootstrap-servers: localhost:9092
+    listener:
+      # RECORD, not BATCH: the offset advances after each listener call returns, so a
+      # crash before the @Transactional method commits means the offset was never
+      # advanced and the event is redelivered. BATCH would also commit on its own
+      # schedule and can acknowledge records this consumer has not durably stored.
+      #
+      # Paired with enable-auto-commit: false below -- with auto-commit on, the
+      # consumer's position advances in the background regardless of what the handler
+      # did, which silently drops events on any crash.
+      ack-mode: record
+    consumer:
+      # Auto-commit would advance the offset before the listener has finished, so a
+      # crash mid-handler silently drops the event. Everything is committed
+      # manually after the database transaction succeeds.
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # JacksonJsonDeserializer, NOT JsonDeserializer: the unprefixed one is still
+      # Jackson 2 under Boot 4, while the application and the producer both use
+      # Jackson 3. The payload would arrive as an unparsed map.
+      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.example.walletservice.events
+        # One concrete envelope type for the whole topic. The payload stays a
+        # JsonNode because its real type is only knowable from eventType at
+        # runtime -- see EventEnvelope.
+        spring.json.value.default.type: com.example.walletservice.events.EventEnvelope
+        # Ignore any __TypeId__ header and use the configured type instead. The
+        # producer is configured not to send one; if a future version did, obeying
+        # it would make this service resolve the producer's class names.
+        spring.json.use.type.headers: false
+
+app:
+  events:
+    # Consuming a service's topic is a contract with the producer, not a per-event
+    # subscription: one topic, many event types, filtered by eventType in code.
+    auth-topic: auth.events
+
 management:
   endpoints:
     web:

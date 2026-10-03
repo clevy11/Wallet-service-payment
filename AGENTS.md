@@ -1,10 +1,12 @@
 # AGENTS.md
 
 ## What this repo is right now
-Six-module Spring Boot 4.0.1 microservice skeleton plus the wallet domain schema.
-`wallet-service` has its Flyway migration, JPA entities and repositories, tested against a
-real Postgres via Testcontainers. Nothing else has business logic yet. No HTTP endpoints,
-no Kafka, no auth. Never assume a feature is already implemented.
+Six-module Spring Boot 4.0.1 microservice skeleton, the wallet domain schema, and the
+`UserCreated` event path end to end: `POST /auth/register` → transactional outbox → relay →
+`auth.events` → wallet-service consumer → customer row. `payment-service`, `bank-mock`,
+`notification-service` and `api-gateway` are still empty skeletons, and no service issues
+a JWT yet. Never assume a feature is already implemented; see "Architecture (target)" for
+the per-module status list.
 
 It is also a **learning project**: the owner is refreshing distributed-systems knowledge.
 Read "Working style" before writing any code.
@@ -69,6 +71,37 @@ Read "Working style" before writing any code.
   of colliding with the primary key. This defeats idempotency guards that assume an
   INSERT will fail. Use `INSERT ... ON CONFLICT DO NOTHING` for dedup
   (see `ProcessedEventRepository.insertIfAbsent`) and assert on the returned row count.
+- **Boot 4 is Jackson 3, so the package is `tools.jackson`, not `com.fasterxml.jackson`.**
+  Autoconfigured `ObjectMapper` is `tools.jackson.databind.ObjectMapper`; injecting
+  `com.fasterxml...ObjectMapper` fails with "required a bean of type ... could not be found".
+  `JacksonException` is a **RuntimeException** in Jackson 3, so `writeValueAsString` /
+  `readTree` no longer need checked-exception handling. Jackson 2 is still on the classpath
+  transitively (spring-security-oauth2-jose, Flyway) — that is not a signal to use it.
+- **Spring Kafka 4 ships two parallel serializer families and only one is Jackson 3.**
+  `JsonSerializer` / `JsonDeserializer` are Jackson 2 (`com.fasterxml`); `JacksonJsonSerializer`
+  / `JacksonJsonDeserializer` are Jackson 3 (`tools.jackson`). Boot 4 configures the Jackson 3
+  `ObjectMapper`, so use the `Jackson*` pair. Mismatching them does not fail at boot — the
+  payload just arrives unparsed or unserialisable at runtime.
+- **`@KafkaListener` has no `ackMode` attribute** (verified with `javap`). Ack mode is a
+  container-factory setting: configure `spring.kafka.listener.ack-mode` (with
+  `spring.kafka.consumer.enable-auto-commit: false`).
+- **`ConsumerTestUtils` is gone in Spring Kafka 4** — it is `KafkaTestUtils`
+  (`org.springframework.kafka.test.utils.KafkaTestUtils`). Same for `@EmbeddedKafka`, which
+  is KRaft-based and needs no ZooKeeper. A `FileNotFoundException` on
+  `.../combined_0_0/replication-offset-checkpoint.tmp` during teardown is harmless noise.
+- **`@EmbeddedKafka` tests must not share one topic.** Records outlive a test method, and a
+  fresh consumer group reads from `earliest`, so the second test sees the first test's
+  messages and fails with "More than one record for topic found". Create a uniquely named
+  topic per test (AdminClient) and build the relay against it. Also park the schedule in
+  tests via `app.outbox.*-ms=600000`, or the `@Scheduled` relay publishes rows mid-assertion
+  and failures become intermittent.
+- **`TestPropertySource` is `org.springframework.test.context.TestPropertySource`**, not
+  `org.springframework.boot.test.context` (Boot 4 moved/removed the latter).
+- **A self-invoked `@Transactional` method silently runs with no transaction.** Spring's
+  proxy is bypassed when a bean calls its own method, so `@Transactional(REQUIRES_NEW)`
+  inside `OutboxRelay` was inert — and invisible, because `saveAndFlush` opens an implicit
+  transaction from the repository anyway. Keep transactional boundaries on a *separate bean*
+  (`OutboxMarker`). The same rule is why `UserRegistrationService` is an interface.
 
 ## Schema ownership — Flyway, never by hand
 - **Never create or alter tables manually in `psql`.** Flyway migrations are the only
@@ -116,17 +149,39 @@ Read "Working style" before writing any code.
   Postgres + Keycloak + Grafana + 5 JVM services at once: cap heaps (`-Xmx256m`) and keep
   observability/auth infrastructure behind opt-in compose profiles.
 - A service JVM takes ~30-40s to start on this machine; budget for it in verification.
+- The embedded `@EmbeddedKafka` broker used by `OutboxRelayTests` needs no ZooKeeper and no
+  Docker, but it does need ~350 MB of heap. It is the only test in the repo that starts a
+  broker, so keep it in one class rather than spreading it.
 
 ## Local infra (`docker-compose.yml`)
-- `docker compose up -d` starts Postgres only; `--profile kafka up -d` adds the broker.
-  Kafka is behind a profile because it is not needed until Day 3 and Docker only has
-  8 GB here. `docker compose config --profiles` lists available profiles.
+- `docker compose up -d` starts Postgres only; `--profile kafka up -d` adds the broker
+  **and** Redpanda Console. Kafka is behind a profile because it is not needed until Day 3
+  and Docker only has 8 GB here. `docker compose config --profiles` lists available profiles.
+- **Redpanda Console (Kafka GUI) is at http://localhost:18080** — a viewer for the broker
+  only; the broker stays stock Apache Kafka. Host port 18080, not 8080, because 8080 is
+  api-gateway's. It reads the broker over the in-network listener (`kafka:29092`), so
+  changing advertised listeners means restarting it too.
+- **Kafka has two advertised listeners and both are needed:** `localhost:9092` for services
+  run from the Mac, `kafka:29092` for containers on the compose network. A broker advertises
+  one address per listener, and a client that resolved `kafka:29092` is *handed* the
+  advertised address for the rest of the connection — so a container pointing at
+  `localhost:9092` dials itself. Before containerising a service, do not just give it
+  `kafka:9092`; use the INTERNAL listener.
+- **`KAFKA_LOG_DIRS` must be set explicitly.** The `apache/kafka` image's bundled
+  `server.properties` points `log.dirs` at `/tmp/kraft-combined-logs`, so the mounted
+  `kafka-data` volume sits empty and every broker recreate loses all topics *and* consumer
+  group offsets. Fixed to `/var/lib/kafka/data`; if topics vanish after a restart, check
+  this first.
+- `auth.events` exists with one partition. Topic records outlive every test and every
+  experiment, so a hand-made message can poison the consumer long after it was sent
+  (see the partition-blocking note under Architecture). Recreate the topic to clear it.
 - **Postgres is published on host port 5433, not 5432** — 5432 is occupied by a leftover
   process from the pre-upgrade Docker 20.10 install. The container still speaks 5432
   internally, so connect from the Mac as `localhost:5433` but from another container on
   the compose network as `postgres:5432`. pgAdmin credentials: postgres / postgres.
-- `docker compose down` **keeps** data; `down -v` deletes the volume, which re-triggers
-  the init scripts on the next start. Don't reach for `-v` casually.
+- `docker compose down` **keeps** data (both the Postgres and Kafka volumes, now that
+  `KAFKA_LOG_DIRS` is set); `down -v` deletes them, which re-triggers the init scripts on
+  the next start. Don't reach for `-v` casually.
 - The init script runs **only on first initialisation of an empty data directory**. After
   editing `infra/initdb/*.sql` you must `down -v` for it to take effect.
 - CLI alternative to pgAdmin: `docker exec -it wallet-postgres psql -U postgres -d walletdb`.
@@ -152,10 +207,19 @@ Read "Working style" before writing any code.
   PR. Steps: `git switch -c feat/<id>-<name>` → work → `git add -A -- . ':!*.DS_Store'` →
   commit → `git push -u origin HEAD` → open the PR URL GitHub prints.
 
-## Target architecture (not implemented yet)
+## Architecture (target)
 Multi-module Maven with the root pom as aggregator: `wallet-service` (8081),
 `payment-service` (8082), `bank-mock` (8083), `notification-service` (8084),
-`api-gateway` (8080), `auth-server` (JWT issuer, **owns `authdb`**).
+`api-gateway` (8080), `auth-server` (8090, JWT issuer, **owns `authdb`**).
+
+What exists today, so nobody assumes a feature is already there:
+- `wallet-service`: Flyway V1 (`customers`, `wallets`, `wallet_entries`,
+  `processed_events`), JPA entities and repositories, and a `UserCreated` consumer on
+  `auth.events`. No HTTP endpoints yet.
+- `auth-server`: Flyway V1 (`users`, `outbox_events`), `POST /auth/register`, and the
+  outbox relay publishing to `auth.events`. **No JWT is issued yet** — `password_hash`
+  holds a `NOT-A-HASH:` placeholder until the login slice replaces it with BCrypt.
+- `payment-service`, `bank-mock`, `notification-service`, `api-gateway`: skeleton only.
 
 Settled decisions — don't relitigate or substitute alternatives:
 - **Database per service.** No cross-service queries or joins, ever.
@@ -180,6 +244,14 @@ Settled decisions — don't relitigate or substitute alternatives:
   transaction; a `@Scheduled` publisher relays `published_at IS NULL` rows. This removes
   event *loss* but not *duplicates* — which is precisely why consumers must be idempotent.
   Never write to the DB and Kafka in the same `@Transactional` method (the dual-write bug).
+  The relay must block on `send().get()`: `send()` is asynchronous, so marking a row
+  published without waiting for the broker turns a retryable failure into silent,
+  permanent event loss.
+- **A determinately-failing consumer record blocks its partition forever.** Observed for
+  real: a malformed `UserCreated` payload violated `customers.display_name NOT NULL`, the
+  handler threw, the offset never advanced, and every later event on that partition waited
+  behind it. Current behaviour is deliberate — retry, lose nothing — but it is unbounded.
+  Bounded retries plus a dead-letter topic is the fix, and it is not built yet.
 - Idempotency keys, transactional outbox, and a choreographed saga that compensates on
   `payment.failed`.
 - Auth is a self-issued JWT module (`auth-server`: Nimbus + RSA keypair + JWKS). Keycloak
