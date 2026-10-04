@@ -30,6 +30,29 @@ spring:
 
   kafka:
     bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # JacksonJsonSerializer, NOT JsonSerializer. Boot 4 ships Jackson 3
+      # (tools.jackson) and configures that ObjectMapper; the older JsonSerializer is
+      # Jackson 2 (com.fasterxml) and never sees the application's mapper.
+      #
+      # The producer block is not optional just because this service also consumes:
+      # without it Boot falls back to StringSerializer, and every publish fails at
+      # runtime with a SerializationException naming the envelope class. Nothing fails
+      # at boot, the outbox row just retries forever.
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        # No __TypeId__ header. Consumers are configured to ignore type headers and use
+        # their own envelope type; sending one would put this service's class names on
+        # the wire and couple every consumer to this package layout.
+        spring.json.add.type.headers: false
+        acks: all
+        # A retry of the same send is deduplicated at the broker by producer id and
+        # sequence, so a network timeout does not become a duplicate event.
+        enable.idempotence: true
+        retries: 3
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
     listener:
       # RECORD, not BATCH: the offset advances after each listener call returns, so a
       # crash before the @Transactional method commits means the offset was never
@@ -67,6 +90,10 @@ app:
     # Consuming a service's topic is a contract with the producer, not a per-event
     # subscription: one topic, many event types, filtered by eventType in code.
     auth-topic: auth.events
+    # Where wallet-service publishes its own events. A different topic from
+    # auth.events so that wallet-service's consumers can be granted read access
+    # without also being able to read the auth domain's.
+    wallet-topic: wallet.events
 
   security:
     # Base URL of the service that signs tokens. The decoder appends
@@ -80,6 +107,15 @@ app:
     # Tokens are minted with this audience. Checked on every request, so a token
     # issued for another service cannot be replayed here.
     audience: wallet-service
+
+  outbox:
+    # How often the relay looks for unpublished rows.
+    fixed-delay-ms: 2000
+    # Wait this long before the first scan. Without it every replica started at the
+    # same moment scans the same backlog in lockstep -- worst right after a restart,
+    # which is when the backlog is largest.
+    initial-delay-ms: 2000
+    batch-size: 50
 
 management:
   endpoints:

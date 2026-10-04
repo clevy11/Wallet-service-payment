@@ -1,6 +1,7 @@
 package com.example.walletservice.support;
 
 import com.example.walletservice.repository.CustomerRepository;
+import com.example.walletservice.repository.OutboxEventRepository;
 import com.example.walletservice.repository.ProcessedEventRepository;
 import com.example.walletservice.repository.WalletEntryRepository;
 import com.example.walletservice.repository.WalletRepository;
@@ -33,10 +34,14 @@ public abstract class PostgresIntegrationTest extends PostgresTestSupport {
     @Autowired
     protected ProcessedEventRepository processedEvents;
 
+    @Autowired
+    protected OutboxEventRepository outbox;
+
     /** Delete in FK-safe order: children before parents. */
     @BeforeEach
     void resetDatabase() {
         entries.deleteAllInBatch();
+        outbox.deleteAllInBatch();
         wallets.deleteAllInBatch();
         customers.deleteAllInBatch();
         processedEvents.deleteAllInBatch();

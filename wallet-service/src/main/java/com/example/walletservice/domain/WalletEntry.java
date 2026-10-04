@@ -62,9 +62,23 @@ public class WalletEntry {
     private BigDecimal balanceAfter;
 
     /**
-     * Caller-supplied idempotency key, unique when present. A retried debit with
-     * the same reference violates the unique index instead of moving the balance
-     * twice.
+     * The transfer this entry is one leg of, or null for a DEPOSIT or ADJUSTMENT,
+     * which has no counterparty.
+     *
+     * <p>What makes an idempotent replay answerable. A retry that finds an existing
+     * entry knows the transfer happened; it still needs the transfer's id to report
+     * back, and nothing else on this row carries it.
+     */
+    @Setter(AccessLevel.NONE)
+    @Column(name = "transfer_id", updatable = false)
+    private UUID transferId;
+
+    /**
+     * Caller-supplied idempotency key, unique when present. A retried debit with the
+     * same reference violates the unique index instead of moving the balance twice.
+     * Derived from the client's own key by {@code TransferLeg}, not stored raw: the
+     * column is 64 characters and a caller's key has no length limit, so storing it
+     * directly would silently truncate and collide unrelated transfers.
      */
     @Setter(AccessLevel.NONE)
     @Column(name = "reference", length = 64, updatable = false)
@@ -75,13 +89,14 @@ public class WalletEntry {
     private Instant createdAt;
 
     public WalletEntry(UUID id, UUID walletId, EntryType entryType, BigDecimal amount,
-                       BigDecimal balanceAfter, String reference) {
+                       BigDecimal balanceAfter, String reference, UUID transferId) {
         this.id = id;
         this.walletId = walletId;
         this.entryType = entryType;
         this.amount = amount;
         this.balanceAfter = balanceAfter;
         this.reference = reference;
+        this.transferId = transferId;
         this.createdAt = Instant.now();
     }
 }

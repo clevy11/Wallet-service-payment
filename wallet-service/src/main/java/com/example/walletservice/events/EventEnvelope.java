@@ -14,7 +14,16 @@ import tools.jackson.databind.JsonNode;
  * payload without wallet-service failing to build, which is what you want while the
  * two deploy on different schedules.
  *
- * <p><b>Why this copy is not generic while the producer's is.</b> The producer knows
+ * <p><b>Now that wallet-service also produces, this record serves both roles.</b> The
+ * {@code wallet.events} relay builds one of these too, and it could be generic -- the
+ * relay knows it is publishing a transfer. It deliberately is not. Two records with
+ * an identical wire shape and a type parameter as the only difference would have to be
+ * kept in sync forever, and the parameter buys nothing here: the relay reads the
+ * payload back as a {@link JsonNode} regardless, because the payload type is stored
+ * as data in the outbox row rather than known at compile time. One record, one shape,
+ * one thing to keep correct.
+ *
+ * <p><b>Why this copy is not generic while auth-server's is.</b> The producer knows
  * the payload type at compile time -- it is constructing the event, so
  * {@code EventEnvelope<UserCreatedPayload>} is checked by javac. A consumer on a
  * shared topic cannot: {@code auth.events} will eventually carry

@@ -9,7 +9,6 @@ import com.example.walletservice.support.PostgresIntegrationTest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import org.junit.jupiter.api.AfterAll;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -54,11 +53,6 @@ class MyWalletControllerTests extends PostgresIntegrationTest {
     @DynamicPropertySource
     static void issuerLocation(DynamicPropertyRegistry registry) {
         registry.add("app.security.auth-server-issuer", () -> JwtTestKeys.ISSUER);
-    }
-
-    @AfterAll
-    static void stopTheJwksServer() {
-        JwtTestKeys.stop();
     }
 
     @Test

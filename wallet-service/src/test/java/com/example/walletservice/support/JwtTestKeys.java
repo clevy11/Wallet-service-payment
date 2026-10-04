@@ -73,12 +73,29 @@ public final class JwtTestKeys {
             // which would leave threads behind after every test class.
             SERVER.setExecutor(Executors.newFixedThreadPool(2));
             SERVER.start();
+
+            // Stopped at JVM exit, and deliberately not from any test class.
+            //
+            // The server is static, so every class in the module shares it, and JUnit
+            // runs those classes sequentially: whichever class ran first would stop the
+            // server in its @AfterAll, and every class after it would fail with
+            // connection refused against a JWKS endpoint that no longer existed --
+            // an error pointing at the token decoder rather than at the lifecycle.
+            // Reference counting does not help either, for the same reason: a later
+            // class's @BeforeAll runs after the earlier class has already released.
+            //
+            // A shutdown hook is the only lifecycle that is not tied to test order.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> SERVER.stop(0)));
         } catch (IOException e) {
             throw new IllegalStateException("cannot start the test JWKS server", e);
         }
     }
 
-    /** Stops the server. Called once by the suite; harmless if called twice. */
+    /**
+     * No longer called by test classes -- see the shutdown hook in the initialiser.
+     * Kept because "stop the shared server" is still a legitimate thing to want when
+     * driving this class from a main().
+     */
     public static void stop() {
         SERVER.stop(0);
     }

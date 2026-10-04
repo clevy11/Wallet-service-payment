@@ -48,11 +48,17 @@ class WalletSchemaTests extends PostgresIntegrationTest {
     void migrationCounted() {
         // If the entity and the migration ever drift, ddl-auto:validate makes the
         // context fail to start before this test runs. Reaching here at all is
-        // the assertion.
-        Integer applied = jdbc.queryForObject(
-                "select count(*) from flyway_schema_history where success", Integer.class);
+        // part of the assertion.
+        //
+        // The versions are listed rather than counted, because a count proves nothing:
+        // 1, 2 and 3 migrations all satisfy "count == 1" only by accident, and a
+        // dropped migration that still leaves three behind would pass. Naming them
+        // also means a new migration is added here on purpose rather than by omission.
+        List<String> applied = jdbc.queryForList(
+                "select version from flyway_schema_history where success order by installed_rank",
+                String.class);
 
-        assertThat(applied).isEqualTo(1);
+        assertThat(applied).containsExactly("1", "2", "3");
     }
 
     @Test
@@ -90,12 +96,12 @@ class WalletSchemaTests extends PostgresIntegrationTest {
         UUID walletId = givenWalletWithBalance("100.0000");
 
         entries.saveAndFlush(new WalletEntry(UUID.randomUUID(), walletId,
-                EntryType.WITHDRAWAL, new BigDecimal("50.0000"), new BigDecimal("50.0000"), "pi-1"));
+                EntryType.WITHDRAWAL, new BigDecimal("50.0000"), new BigDecimal("50.0000"), "pi-1", null));
 
         Assertions.assertThatThrownBy(() ->
                         entries.saveAndFlush(new WalletEntry(UUID.randomUUID(), walletId,
                                 EntryType.WITHDRAWAL, new BigDecimal("50.0000"),
-                                new BigDecimal("0.0000"), "pi-1")))
+                                new BigDecimal("0.0000"), "pi-1", null)))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
         assertThat(entries.count()).isEqualTo(1);
@@ -110,9 +116,9 @@ class WalletSchemaTests extends PostgresIntegrationTest {
         // that clause Postgres treats NULLs as equal, so it would reject the
         // second row and make every unreferenced entry impossible.
         entries.saveAndFlush(new WalletEntry(UUID.randomUUID(), walletId,
-                EntryType.DEPOSIT, new BigDecimal("1.0000"), new BigDecimal("1.0000"), null));
+                EntryType.DEPOSIT, new BigDecimal("1.0000"), new BigDecimal("1.0000"), null, null));
         entries.saveAndFlush(new WalletEntry(UUID.randomUUID(), walletId,
-                EntryType.DEPOSIT, new BigDecimal("1.0000"), new BigDecimal("2.0000"), null));
+                EntryType.DEPOSIT, new BigDecimal("1.0000"), new BigDecimal("2.0000"), null, null));
 
         assertThat(entries.count()).isEqualTo(2);
     }
