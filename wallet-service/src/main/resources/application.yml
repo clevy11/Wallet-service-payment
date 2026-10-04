@@ -68,6 +68,19 @@ app:
     # subscription: one topic, many event types, filtered by eventType in code.
     auth-topic: auth.events
 
+  security:
+    # Base URL of the service that signs tokens. The decoder appends
+    # /.well-known/jwks.json to fetch the signing key, and separately requires the
+    # `iss` claim to equal this value, so a token from any other issuer is refused.
+    #
+    # A config value, not a service registry lookup: there is no discovery in this
+    # system, and an address that changes at runtime is one more thing to be right
+    # about before anything works.
+    auth-server-issuer: http://localhost:8090
+    # Tokens are minted with this audience. Checked on every request, so a token
+    # issued for another service cannot be replayed here.
+    audience: wallet-service
+
 management:
   endpoints:
     web:

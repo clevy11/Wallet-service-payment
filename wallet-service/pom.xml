@@ -57,6 +57,27 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+          Boot 4 moved @AutoConfigureMockMvc out of spring-boot-test-autoconfigure into
+          this module, under org.springframework.boot.webmvc.test.autoconfigure.
+          Verified against the jar; the Boot 3 package no longer exists.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Resource-server support: the JWT decoder, the security filter chain and the
+          servlet integration. wallet-service holds no key material; it fetches the
+          signing key from auth-server's JWKS. That is the point of the asymmetric
+          signature, and it requires no JOSE dependency of its own.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa-test</artifactId>

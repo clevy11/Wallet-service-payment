@@ -35,16 +35,9 @@ spring:
       # is Jackson 2 (com.fasterxml) and will not see the application's mapper.
       value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
       properties:
-        # Do not write the producer's Java class names into a __TypeId__ header.
-        # Those names are the producer's internal layout: a consumer forced to
-        # resolve them breaks the moment auth-server renames or repackages a
-        # record, and two services now share a build-time coupling they are meant
-        # to be decoupled from. Consumers dispatch on eventType instead.
+
         spring.json.add.type.headers: false
-        # Wait for the full ISR (in-sync replica set) to acknowledge, not just the
-        # leader. With acks=1 the leader writes locally and replies; if that broker
-        # then dies before replication, the event is gone and the outbox has
-        # already marked it published. Unrecoverable event loss.
+
         acks: all
         # Makes a retry of the same send idempotent at the broker: a duplicate
         # caused by a network timeout is deduplicated by producer id and sequence.
@@ -54,6 +47,19 @@ spring:
         request.timeout.ms: 10000
 
 app:
+  security:
+    # Who the tokens say they are from. A verifier is expected to check this, or a
+    # token from some other issuer that happens to be signed by a key it trusts
+    # would be accepted.
+    issuer: http://localhost:8090
+    # 15 minutes. Short enough that a leaked token's usefulness is bounded, long
+    # enough that a page of requests does not each need a fresh login. There are no
+    # refresh tokens yet, so at worst the user logs in again after this.
+    token-ttl: 15m
+    # Where the signing keypair lives. Generated on first boot, then reused -- a new
+    # keypair per restart would invalidate every token already in flight and silently
+    # log out every user on each deploy. Never commit this directory.
+    key-directory: ./keys
   events:
     # One topic per producing service, not per event type. A new event type then
     # needs no change to any consumer's subscription config.

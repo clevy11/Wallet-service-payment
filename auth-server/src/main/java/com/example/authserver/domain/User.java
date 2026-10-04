@@ -55,6 +55,20 @@ public class User {
     @Column(name = "roles", nullable = false, length = 255)
     private String roles = "USER";
 
+    /**
+     * Whether the account may authenticate at all.
+     *
+     * <p>Not the same question as whether a particular token is still valid, which is
+     * {@link #tokenVersion}. One is a property of the account, the other of the
+     * credential, and they change for different reasons: disabling blocks new logins,
+     * bumping the version kills tokens already in someone's hand.
+     *
+     * <p>Setter withheld like {@code id}: flipping this by assignment would make the
+     * two-word version {@code setEnabled(false)} the easy way to do it, and the
+     * pairing with {@link #revokeIssuedTokens()} is the part that must not be
+     * forgotten.
+     */
+    @Setter(AccessLevel.NONE)
     @Column(name = "enabled", nullable = false)
     private boolean enabled = true;
 
@@ -82,5 +96,40 @@ public class User {
         this.passwordHash = passwordHash;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
+    }
+
+    /**
+     * Revokes every token ever issued to this user, in one step.
+     *
+     * <p>A method rather than a setter for the same reason {@code OutboxEvent} exposes
+     * {@code markPublished} instead of {@code setPublishedAt}: the column is not
+     * arbitrary state, it is a counter with one legal transition, and the legal
+     * transition is revocation. A setter would let anything increment it by one for
+     * no reason, or worse, set it back down and un-revoke a compromised account.
+     *
+     * <p>Monotonic on purpose — going backwards would resurrect tokens the user was
+     * told were dead.
+     */
+    public void revokeIssuedTokens() {
+        this.tokenVersion++;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Stops the account authenticating.
+     *
+     * <p>Note what this does <em>not</em> do: it leaves existing tokens working.
+     * Callers that mean "this person is locked out now" must also call
+     * {@link #revokeIssuedTokens()}; {@code AccountService} does both, in one
+     * transaction.
+     */
+    public void disable() {
+        this.enabled = false;
+        this.updatedAt = Instant.now();
+    }
+
+    public void enable() {
+        this.enabled = true;
+        this.updatedAt = Instant.now();
     }
 }

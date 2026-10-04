@@ -1,6 +1,7 @@
 package com.example.authserver.service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import com.example.authserver.domain.OutboxEvent;
@@ -9,6 +10,7 @@ import com.example.authserver.support.PostgresIntegrationTest;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import tools.jackson.databind.JsonNode;
@@ -29,6 +31,53 @@ class UserRegistrationServiceTests extends PostgresIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    /**
+     * The regression guard for the placeholder this slice replaced: the stored value
+     * must be a real BCrypt hash, never the password itself.
+     *
+     * <p>Asserted in three ways because a weaker assertion would pass for the wrong
+     * reason. "Does not contain the password" is satisfied by a reversible encoding
+     * such as Base64, which is worse than plaintext -- it looks like a hash to a
+     * reviewer while still yielding the password instantly. Pinning the {@code $2a$}
+     * prefix instead confirms the algorithm actually used.
+     */
+    @Test
+    void storesABcryptHashRatherThanThePassword() {
+        UUID correlationId = UUID.randomUUID();
+
+        UserRegistrationService.RegistrationResult result =
+                registrations.register("ada", "ada@example.com", "correct horse", correlationId);
+
+        String hash = users.findById(result.userId()).orElseThrow().getPasswordHash();
+        assertThat(hash)
+                .startsWith("$2a$")
+                .doesNotContain("correct horse")
+                .hasSizeGreaterThanOrEqualTo(59);
+        assertThat(passwordEncoder.matches("correct horse", hash)).isTrue();
+        assertThat(passwordEncoder.matches("not the password", hash)).isFalse();
+    }
+
+    /**
+     * Two users with the same password must not share a hash. Without an internal
+     * salt, identical passwords produce identical rows, which turns one cracked
+     * account into a silent confirmation of every other account that shares the
+     * password -- and tells an attacker which accounts are worth attacking together.
+     */
+    @Test
+    void theSamePasswordHashesDifferentlyPerUser() {
+        UUID correlationId = UUID.randomUUID();
+
+        registrations.register("ada", "ada@example.com", "correct horse", correlationId);
+        registrations.register("grace", "grace@example.com", "correct horse", correlationId);
+
+        List<String> hashes = users.findAll().stream().map(User::getPasswordHash).toList();
+        assertThat(hashes).hasSize(2);
+        assertThat(hashes.get(0)).isNotEqualTo(hashes.get(1));
+    }
 
     @Test
     void writesTheUserAndTheEventInOneTransaction() {

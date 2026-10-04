@@ -60,9 +60,31 @@
             <artifactId>spring-security-oauth2-jose</artifactId>
         </dependency>
 
+        <!--
+          The filter chain, servlet integration and the resource-server module.
+          spring-security-oauth2-jose alone is enough to mint and verify a JWT, but
+          it brings no HttpSecurity and no security-web, so without this the module
+          cannot decide which paths a token is required for.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+          Boot 4 modularised the test starters, and @AutoConfigureMockMvc is no longer
+          in spring-boot-test-autoconfigure. Verified against the jar rather than
+          assumed: the class moved to org.springframework.boot.webmvc.test.autoconfigure,
+          which lives in this module. The old package does not exist in Boot 4.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
