@@ -8,6 +8,7 @@ import com.example.authserver.events.UserCreatedPayload;
 import com.example.authserver.repository.OutboxEventRepository;
 import com.example.authserver.repository.UserRepository;
 
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,12 +25,14 @@ public class UserRegistrationServiceImpl implements UserRegistrationService {
     private final UserRepository users;
     private final OutboxEventRepository outbox;
     private final ObjectMapper objectMapper;
+    private final PasswordEncoder passwords;
 
     public UserRegistrationServiceImpl(UserRepository users, OutboxEventRepository outbox,
-                                       ObjectMapper objectMapper) {
+                                       ObjectMapper objectMapper, PasswordEncoder passwords) {
         this.users = users;
         this.outbox = outbox;
         this.objectMapper = objectMapper;
+        this.passwords = passwords;
     }
 
     /**
@@ -52,7 +55,11 @@ public class UserRegistrationServiceImpl implements UserRegistrationService {
     public RegistrationResult register(String username, String email, String password,
                                        UUID correlationId) {
         UUID userId = UUID.randomUUID();
-        User user = new User(userId, username, email, hashPlaceholder(password));
+        // Hashed inside this transaction rather than in the controller: the encoder
+        // is deliberately slow, and doing it outside would hold no lock but also
+        // guarantee nothing. More importantly the hash must be part of the same
+        // atomic write as the event, or a user could exist with no event.
+        User user = new User(userId, username, email, passwords.encode(password));
 
         UUID eventId = UUID.randomUUID();
         OutboxEvent event = new OutboxEvent(
@@ -83,17 +90,5 @@ public class UserRegistrationServiceImpl implements UserRegistrationService {
             // user nobody will ever hear about.
             throw new IllegalStateException("cannot serialise UserCreated payload", e);
         }
-    }
-
-    /**
-     * Placeholder until the login slice replaces it with BCrypt.
-     *
-     * <p>Named and prefixed so it cannot be mistaken for a real hash. It encodes the
-     * password verbatim, which means {@code authdb.users} must be treated as
-     * containing plaintext credentials for as long as this exists -- no backups, no
-     * snapshots shared outside the machine.
-     */
-    private String hashPlaceholder(String password) {
-        return "NOT-A-HASH:" + password;
     }
 }

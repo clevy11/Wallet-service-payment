@@ -4,8 +4,9 @@
 Six-module Spring Boot 4.0.1 microservice skeleton, the wallet domain schema, and the
 `UserCreated` event path end to end: `POST /auth/register` → transactional outbox → relay →
 `auth.events` → wallet-service consumer → customer row. `payment-service`, `bank-mock`,
-`notification-service` and `api-gateway` are still empty skeletons, and no service issues
-a JWT yet. Never assume a feature is already implemented; see "Architecture (target)" for
+`notification-service` and `api-gateway` are still empty skeletons. `auth-server` now
+issues real RS256 JWTs (BCrypt passwords, `POST /auth/login`, JWKS, self-service
+deactivation) and both it and wallet-service verify tokens as resource servers. Never assume a feature is already implemented; see "Architecture (target)" for
 the per-module status list.
 
 It is also a **learning project**: the owner is refreshing distributed-systems knowledge.
@@ -97,6 +98,33 @@ Read "Working style" before writing any code.
   and failures become intermittent.
 - **`TestPropertySource` is `org.springframework.test.context.TestPropertySource`**, not
   `org.springframework.boot.test.context` (Boot 4 moved/removed the latter).
+- **`@AutoConfigureMockMvc` needs `spring-boot-webmvc-test`** and lives in
+  `org.springframework.boot.webmvc.test.autoconfigure`, verified against the jar. Boot 3's
+  `org.springframework.boot.test.autoconfigure.web.servlet` no longer exists.
+- **`src/test/resources/application.yml` SHADOWS the main one; it does not merge.**
+  A test yml carrying only `app.security.key-directory` silently deleted every other
+  `app.*` setting and surfaced as "Could not resolve placeholder 'app.security.issuer'".
+  Override per test class instead. Worse: deleting the source leaves the copy in
+  `target/test-classes`, which still shadows on the next `./mvnw test` — `clean` or
+  delete the directory when a config change seems to have no effect.
+- **Two top-level `app:` keys in one YAML file is a startup crash**, not a merge:
+  SnakeYAML fails with "while constructing a mapping". Append new config into the
+  existing block.
+- **`--` inside an XML comment is a POM parse error** ("next character must be >").
+  Use a semicolon in pom.xml comments even though `--` is fine in Java/YAML comments.
+- **`JwtDecoders.fromIssuerLocation` needs OIDC discovery metadata**, which this
+  auth-server does not serve; use `NimbusJwtDecoder.withJwkSetUri(issuer +
+  "/.well-known/jwks.json")`. The decoder bean must be typed `NimbusJwtDecoder`, not
+  `JwtDecoder`, because `setJwtValidator` is only on the concrete class.
+- **Pin the algorithm on a JWKS-backed decoder** with
+  `.jwsAlgorithm(SignatureAlgorithm.RS256)`. Otherwise an attacker takes the published
+  RSA public key, uses its bytes as an HMAC secret, and mints an HS256 token that
+  verifies — the algorithm-confusion attack. `MyWalletControllerTests` attempts it for
+  real against a JDK `HttpServer` serving a throwaway JWKS.
+- **`ClaimAccessor` has no `getClaimAsInteger`.** JSON integers arrive as `Number`;
+  use `((Number) jwt.getClaim("token_version")).intValue()`.
+- **`Jwt` is not a builder** — it has no `claim(k, v)`. Use
+  `Jwt.withTokenValue(...)...build()` to fabricate one for a validator test.
 - **A self-invoked `@Transactional` method silently runs with no transaction.** Spring's
   proxy is bypassed when a bean calls its own method, so `@Transactional(REQUIRES_NEW)`
   inside `OutboxRelay` was inert — and invisible, because `saveAndFlush` opens an implicit
@@ -217,9 +245,20 @@ What exists today, so nobody assumes a feature is already there:
   `processed_events`), JPA entities and repositories, and a `UserCreated` consumer on
   `auth.events`. No HTTP endpoints yet.
 - `auth-server`: Flyway V1 (`users`, `outbox_events`), `POST /auth/register`, and the
-  outbox relay publishing to `auth.events`. **No JWT is issued yet** — `password_hash`
-  holds a `NOT-A-HASH:` placeholder until the login slice replaces it with BCrypt.
+  outbox relay publishing to `auth.events`. **JWTs are live**: `password_hash` is
+  BCrypt, `POST /auth/login` issues a 15-minute RS256 token, `/.well-known/jwks.json`
+  publishes the public key, and `POST /auth/users/me/deactivate` disables an account
+  and revokes its tokens in one transaction.
+- `wallet-service`: **now a resource server** — `GET /wallets/me` resolves the
+  customer from the token's `sub`, fetching the signing key from auth-server's JWKS
+  over HTTP. It deliberately has **no** revocation check (see the staleness note).
 - `payment-service`, `bank-mock`, `notification-service`, `api-gateway`: skeleton only.
+
+Verified by hand on the running system: register → login → token carries
+`sub`/`aud`/`iss`/`roles`/`token_version`/`kid` → wallet-service accepts it having
+never seen the private key → deactivate → auth-server returns 401 immediately, login
+refused, **but wallet-service still returns 200**. That divergence is the known
+trade-off below, not a bug.
 
 Settled decisions — don't relitigate or substitute alternatives:
 - **Database per service.** No cross-service queries or joins, ever.
@@ -256,6 +295,24 @@ Settled decisions — don't relitigate or substitute alternatives:
   `payment.failed`.
 - Auth is a self-issued JWT module (`auth-server`: Nimbus + RSA keypair + JWKS). Keycloak
   is an optional compose profile only.
+- **Revocation is enforced only on auth-server, deliberately.** auth-server runs
+  `TokenRevocationValidator`, which compares the token's `token_version` claim and
+  `enabled` flag against its own `users` row on every authenticated request, so
+  deactivation takes effect immediately there. wallet-service does **not**: making it
+  instant would mean an HTTP call to auth-server per request, adding auth-server's
+  latency to every request and leaving wallet-service unable to serve anyone while
+  auth-server is down. The cost is up to one TTL (15 min) of access for a user
+  deactivated inside that window — observed, not hypothetical. Alternatives, none free:
+  a denylist of revoked `jti`s (same lookup, larger table), introspection on every
+  request (RFC 7662, worst option), or accepting the window. Revisit in the
+  revocation slice.
+- **No lazy/soft delete of users.** `enabled = false` plus `token_version++` covers
+  "locked out" and "tokens revoked"; a true erasure request scrubs PII but keeps the
+  row and id, because `walletdb.customers.owner_id` references it from another
+  database with no FK to cascade, the ledger needs the owner resolvable, and
+  `UNIQUE(username)` would otherwise burn the username permanently. Completing an
+  erasure also needs wallet-service to drop its copy of `display_name`, which can only
+  happen via an event.
 - **No service discovery.** No Eureka, no Consul. Every service address is a config
   value (`spring.cloud.gateway.routes[].uri`, `bank.base-url`,
   `spring.kafka.bootstrap-servers`). Don't "improve" this by adding a registry.

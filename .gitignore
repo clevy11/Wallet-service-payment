@@ -32,3 +32,14 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# JWT signing keypair, generated on first boot -- by the app and by its tests, which
+# boot a real context. The private key must never be committed: anyone holding it can
+# mint a token for any user.
+#
+# Note: there is deliberately no src/test/resources/application.yml overriding the
+# key directory. A test yml with the same name SHADOWS src/main/resources/application.yml
+# instead of merging with it, so every app.* setting silently disappears -- which
+# surfaced as "Could not resolve placeholder 'app.security.issuer'". Override per test
+# class if a test ever needs to.
+keys/
